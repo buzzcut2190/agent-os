@@ -1,0 +1,11 @@
+name: feedback-synthesis
+description: 代码审查反馈综合 — 将代码审查发现汇总成结构化报告
+version: 1.0.0
+author: agent-os
+tags: [review, quality, report]
+context_file: context.md
+prompt_file: prompt.md
+lang: zh
+config:
+  max_reviewers: "3"
+  output_format: markdown

@@ -1,0 +1,10 @@
+bin/
+.claude/
+.agentfs/
+gui/
+node_modules/
+*.tmp
+*.bak
+*.test
+.idea/
+.vscode/

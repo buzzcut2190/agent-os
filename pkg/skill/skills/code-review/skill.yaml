@@ -1,0 +1,11 @@
+name: code-review
+description: 自动化代码审查 — 安全/性能/风格/最佳实践检查
+version: 1.0.0
+author: agent-os
+tags: [review, security, quality]
+context_file: context.md
+prompt_file: prompt.md
+lang: zh
+config:
+  severity: "medium"
+  max_issues: "50"

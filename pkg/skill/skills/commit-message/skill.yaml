@@ -1,0 +1,11 @@
+name: commit-message
+description: 从 diff 生成规范的提交信息
+version: 1.0.0
+author: agent-os
+tags: [git, productivity, quality]
+context_file: context.md
+prompt_file: prompt.md
+lang: zh
+config:
+  style: "conventional"
+  max_length: "72"

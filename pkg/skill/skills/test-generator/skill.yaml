@@ -1,0 +1,11 @@
+name: test-generator
+description: 自动生成测试用例 — 单元测试/集成测试/表驱动测试
+version: 1.0.0
+author: agent-os
+tags: [testing, productivity]
+context_file: context.md
+prompt_file: prompt.md
+lang: zh
+config:
+  framework: "auto"
+  coverage_target: "80"

@@ -1,0 +1,7 @@
+name: git-annotate
+version: "1.0"
+description: "Show git log in @context output"
+hooks:
+  on_context: "git log --oneline -5"
+config:
+  max_entries: 5

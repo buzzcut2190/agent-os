@@ -1,0 +1,27 @@
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: agentfs
+    main: ./cmd/agentfs/
+    binary: agentfs
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags: -X main.version={{.Version}}
+  - id: agentfs-mcp
+    main: ./cmd/agentfs-mcp/
+    binary: agentfs-mcp
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags: -X main.version={{.Version}}
+
+archives:
+  - format: tar.gz
+    name_template: "{{.Binary}}-{{.Os}}-{{.Arch}}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc

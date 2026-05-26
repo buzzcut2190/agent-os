@@ -1,0 +1,11 @@
+name: architectural-review
+description: 架构审查 — 依赖图分析 + 模块边界检查
+version: 1.0.0
+author: agent-os
+tags: [architecture, quality, review]
+context_file: context.md
+prompt_file: prompt.md
+lang: zh
+config:
+  max_depth: "5"
+  check_cycles: "true"
