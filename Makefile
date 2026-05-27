@@ -1,6 +1,6 @@
 BINARY     := bin/agentfs
 BINARY_MCP := bin/agentfs-mcp
-VERSION    := 0.2.0
+VERSION    := 0.5.0
 GO         := go
 LDFLAGS    := -X main.version=$(VERSION)
 

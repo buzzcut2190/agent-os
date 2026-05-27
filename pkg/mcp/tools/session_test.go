@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -32,27 +30,6 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	os.RemoveAll(sharedSessionDir)
 	os.Exit(code)
-}
-
-// requireOverlayMount skips the test if overlayfs is unavailable or the
-// current user cannot mount.
-func requireOverlayMount(t *testing.T) {
-	t.Helper()
-	if _, err := os.Stat("/sys/module/overlay"); err != nil {
-		t.Skip("overlay kernel module not available")
-	}
-	lower := t.TempDir()
-	upper := t.TempDir()
-	work := t.TempDir()
-	merged := t.TempDir()
-	for _, dir := range []string{upper, work, merged} {
-		_ = os.MkdirAll(dir, 0755)
-	}
-	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lower, upper, work)
-	if err := syscall.Mount("overlay", merged, "overlay", 0, opts); err != nil {
-		t.Skip("overlay mount not permitted: " + err.Error())
-	}
-	_ = syscall.Unmount(merged, 0)
 }
 
 // setupSessionServer creates a fresh MCPServer with session tools registered
@@ -88,30 +65,15 @@ func getResultText(t *testing.T, result *mcp.CallToolResult) string {
 	return tc.Text
 }
 
-// skipIfCreateFailed gracefully skips the test when create_session fails
-// (e.g. because the overlay mount is not permitted at runtime).
-func skipIfCreateFailed(t *testing.T, result *mcp.CallToolResult) {
-	t.Helper()
-	if !result.IsError {
-		return
-	}
-	text := getResultText(t, result)
-	if strings.Contains(text, "mount") || strings.Contains(text, "overlay") {
-		t.Skip("create_session failed (overlay issue): " + text)
-	}
-	t.Fatalf("create_session returned unexpected error: %s", text)
-}
-
 // =============================================================================
-// Tests
+// Tests — no overlay mount required!
 // =============================================================================
 
 func TestCreateSession(t *testing.T) {
-	requireOverlayMount(t)
 	srv, projectDir := setupSessionServer(t)
 
 	result := callSessionTool(t, srv, "create_session", map[string]any{"project": projectDir})
-	skipIfCreateFailed(t, result)
+	require.False(t, result.IsError, "create_session error: %s", getResultText(t, result))
 
 	text := getResultText(t, result)
 	var session map[string]any
@@ -119,16 +81,16 @@ func TestCreateSession(t *testing.T) {
 	assert.NotEmpty(t, session["id"], "session id should not be empty")
 	assert.NotEmpty(t, session["project"], "session project should not be empty")
 	assert.Equal(t, "active", session["status"], "session status should be active")
+	assert.NotEmpty(t, session["workspace"], "workspace should not be empty")
 }
 
 func TestListSessions(t *testing.T) {
-	requireOverlayMount(t)
 	srv, projectDir := setupSessionServer(t)
 
 	r1 := callSessionTool(t, srv, "create_session", map[string]any{"project": projectDir})
-	skipIfCreateFailed(t, r1)
+	require.False(t, r1.IsError, "create_session error: %s", getResultText(t, r1))
 	r2 := callSessionTool(t, srv, "create_session", map[string]any{"project": projectDir})
-	skipIfCreateFailed(t, r2)
+	require.False(t, r2.IsError, "create_session error: %s", getResultText(t, r2))
 
 	result := callSessionTool(t, srv, "list_sessions", nil)
 	require.False(t, result.IsError, "list_sessions returned error: %s", getResultText(t, result))
@@ -140,11 +102,10 @@ func TestListSessions(t *testing.T) {
 }
 
 func TestGetSession(t *testing.T) {
-	requireOverlayMount(t)
 	srv, projectDir := setupSessionServer(t)
 
 	r := callSessionTool(t, srv, "create_session", map[string]any{"project": projectDir})
-	skipIfCreateFailed(t, r)
+	require.False(t, r.IsError, "create_session error: %s", getResultText(t, r))
 
 	var session map[string]any
 	require.NoError(t, json.Unmarshal([]byte(getResultText(t, r)), &session))
@@ -165,11 +126,10 @@ func TestGetSession(t *testing.T) {
 }
 
 func TestDiscardSession(t *testing.T) {
-	requireOverlayMount(t)
 	srv, projectDir := setupSessionServer(t)
 
 	r := callSessionTool(t, srv, "create_session", map[string]any{"project": projectDir})
-	skipIfCreateFailed(t, r)
+	require.False(t, r.IsError, "create_session error: %s", getResultText(t, r))
 
 	var session map[string]any
 	require.NoError(t, json.Unmarshal([]byte(getResultText(t, r)), &session))
@@ -198,19 +158,18 @@ func TestDiscardSession(t *testing.T) {
 }
 
 func TestSessionDiff(t *testing.T) {
-	requireOverlayMount(t)
 	srv, projectDir := setupSessionServer(t)
 
 	r := callSessionTool(t, srv, "create_session", map[string]any{"project": projectDir})
-	skipIfCreateFailed(t, r)
+	require.False(t, r.IsError, "create_session error: %s", getResultText(t, r))
 
 	var session map[string]any
 	require.NoError(t, json.Unmarshal([]byte(getResultText(t, r)), &session))
 	sessionID, _ := session["id"].(string)
-	mergedPath, _ := session["merged"].(string)
+	workspacePath, _ := session["workspace"].(string)
 
-	// Write a new file through the overlay merged path.
-	newFilePath := filepath.Join(mergedPath, "new_file.txt")
+	// Write a new file through the workspace path.
+	newFilePath := filepath.Join(workspacePath, "new_file.txt")
 	require.NoError(t, os.WriteFile(newFilePath, []byte("new content"), 0644))
 
 	// Get the diff — the new file should appear as "added".
@@ -235,4 +194,38 @@ func TestSessionDiff(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "new_file.txt should appear as 'added' in session diff")
+}
+
+func TestSessionDiffDelete(t *testing.T) {
+	srv, projectDir := setupSessionServer(t)
+
+	r := callSessionTool(t, srv, "create_session", map[string]any{"project": projectDir})
+	require.False(t, r.IsError, "create_session error: %s", getResultText(t, r))
+
+	var session map[string]any
+	require.NoError(t, json.Unmarshal([]byte(getResultText(t, r)), &session))
+	sessionID, _ := session["id"].(string)
+	workspacePath, _ := session["workspace"].(string)
+
+	// Delete the existing test.txt in workspace
+	require.NoError(t, os.Remove(filepath.Join(workspacePath, "test.txt")))
+
+	// Get the diff — test.txt should appear as "deleted".
+	result := callSessionTool(t, srv, "session_diff", map[string]any{"id": sessionID})
+	require.False(t, result.IsError, "session_diff error: %s", getResultText(t, result))
+
+	var diff map[string]any
+	require.NoError(t, json.Unmarshal([]byte(getResultText(t, result)), &diff))
+	changes, ok := diff["changes"].([]any)
+	require.True(t, ok, "changes should be an array")
+
+	found := false
+	for _, c := range changes {
+		change, _ := c.(map[string]any)
+		if change["path"] == "test.txt" && change["status"] == "deleted" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "test.txt should appear as 'deleted' in session diff")
 }

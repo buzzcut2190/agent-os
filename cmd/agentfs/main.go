@@ -54,7 +54,7 @@ func main() {
 
 	case "session":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: agentfs session <start|list|commit|discard> [args]")
+			fmt.Fprintln(os.Stderr, "Usage: agentfs session <start|list|commit|discard|diff> [args]")
 			os.Exit(1)
 		}
 		runSession(os.Args[2:])
@@ -125,7 +125,7 @@ func runUnmount(mountPoint string) error {
 
 func runSession(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: agentfs session <start|list|commit|discard> [args]")
+		fmt.Fprintln(os.Stderr, "Usage: agentfs session <start|list|commit|discard|diff> [args]")
 		os.Exit(1)
 	}
 
@@ -141,8 +141,8 @@ func runSession(args []string) {
 			log.Fatalf("start session: %v", err)
 		}
 		fmt.Printf("Session %s started\n", sess.ID)
-		fmt.Printf("  Project:  %s\n", sess.Project)
-		fmt.Printf("  Merged:   %s\n", sess.Merged)
+		fmt.Printf("  Project:    %s\n", sess.Project)
+		fmt.Printf("  Workspace:  %s\n", sess.Workspace)
 
 	case "list":
 		sessions, err := mgr.ListSessions()
@@ -179,6 +179,25 @@ func runSession(args []string) {
 			log.Fatalf("discard: %v", err)
 		}
 		fmt.Println("Session discarded")
+
+	case "diff":
+		if len(args) < 2 {
+			log.Fatal("Usage: agentfs session diff <session_id>")
+		}
+		changes, err := mgr.DiffSession(args[1])
+		if err != nil {
+			log.Fatalf("diff: %v", err)
+		}
+		if len(changes) == 0 {
+			fmt.Println("No changes detected")
+			return
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
+		fmt.Fprintln(w, "PATH\tSTATUS")
+		for _, c := range changes {
+			fmt.Fprintf(w, "%s\t%s\n", c.Path, c.Status)
+		}
+		w.Flush()
 
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown session command: %s\n", args[0])

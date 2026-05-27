@@ -1,14 +1,15 @@
 package sandbox
 
 import (
+	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -26,13 +27,11 @@ func DefaultBaseDir() string {
 	return filepath.Join(home, ".local", "share", "agentfs", "sessions")
 }
 
-// StartSession creates a new overlay session for the given project.
+// StartSession creates a new copy-based isolated session for the given project.
 func (m *Manager) StartSession(projectRoot string) (*Session, error) {
 	id := newSessionID()
 	sessDir := filepath.Join(m.BaseDir, id)
-	upper := filepath.Join(sessDir, "upper")
-	work := filepath.Join(sessDir, "work")
-	merged := filepath.Join(sessDir, "merged")
+	workspace := filepath.Join(sessDir, "workspace")
 
 	if err := os.MkdirAll(sessDir, 0755); err != nil {
 		return nil, fmt.Errorf("create session dir: %w", err)
@@ -44,23 +43,19 @@ func (m *Manager) StartSession(projectRoot string) (*Session, error) {
 	}
 
 	sess := &Session{
-		ID:      id,
-		Created: time.Now(),
-		Project: absProject,
-		Lower:   absProject,
-		Upper:   upper,
-		Work:    work,
-		Merged:  merged,
-		Status:  StatusActive,
+		ID:        id,
+		Created:   time.Now(),
+		Project:   absProject,
+		Workspace: workspace,
+		Status:    StatusActive,
 	}
 
-	if err := CreateOverlay(sess.Lower, sess.Upper, sess.Work, sess.Merged); err != nil {
+	if err := CreateWorkspace(absProject, sess.Workspace); err != nil {
 		os.RemoveAll(sessDir)
 		return nil, err
 	}
 
 	if err := saveSession(m.sessionPath(id), sess); err != nil {
-		_ = RemoveOverlay(merged)
 		os.RemoveAll(sessDir)
 		return nil, err
 	}
@@ -68,7 +63,7 @@ func (m *Manager) StartSession(projectRoot string) (*Session, error) {
 	return sess, nil
 }
 
-// CommitSession applies all changes from the session back to the project.
+// CommitSession applies all changes from the workspace back to the project.
 func (m *Manager) CommitSession(id string) error {
 	sess, err := loadSession(m.sessionPath(id))
 	if err != nil {
@@ -78,19 +73,13 @@ func (m *Manager) CommitSession(id string) error {
 		return fmt.Errorf("session %s is not active (status: %s)", id, sess.Status)
 	}
 
-	// Sync changes from upper to project (lower)
-	// We use a file-by-file copy to correctly handle deletions
-	if err := syncUpperToLower(sess.Upper, sess.Lower); err != nil {
+	// Sync changes from workspace to project
+	if err := syncWorkspaceToProject(sess.Workspace, sess.Project); err != nil {
 		return fmt.Errorf("sync changes: %w", err)
 	}
 
-	// Unmount overlay
-	if err := RemoveOverlay(sess.Merged); err != nil {
-		return fmt.Errorf("unmount: %w", err)
-	}
-
-	// Clean up session dirs
-	os.RemoveAll(filepath.Dir(sess.Upper))
+	// Clean up workspace (keep session dir for metadata)
+	os.RemoveAll(sess.Workspace)
 
 	// Update status
 	sess.Status = StatusCommitted
@@ -107,20 +96,15 @@ func (m *Manager) DiscardSession(id string) error {
 		return fmt.Errorf("session %s is not active (status: %s)", id, sess.Status)
 	}
 
-	// Unmount overlay
-	if err := RemoveOverlay(sess.Merged); err != nil {
-		return fmt.Errorf("unmount: %w", err)
-	}
-
-	// Delete upper and work dirs (discard all changes)
-	os.RemoveAll(filepath.Dir(sess.Upper))
+	// Delete workspace (discard all changes; keep session dir for metadata)
+	os.RemoveAll(sess.Workspace)
 
 	// Update status
 	sess.Status = StatusDiscarded
 	return saveSession(m.sessionPath(id), sess)
 }
 
-// ListSessions returns all active sessions.
+// ListSessions returns all sessions.
 func (m *Manager) ListSessions() ([]*Session, error) {
 	if err := os.MkdirAll(m.BaseDir, 0755); err != nil {
 		return nil, err
@@ -183,50 +167,61 @@ func loadSession(path string) (*Session, error) {
 	return sess, nil
 }
 
-// syncUpperToLower copies changes from upper layer back to the lower directory.
-func syncUpperToLower(upper, lower string) error {
-	return filepath.WalkDir(upper, func(path string, d os.DirEntry, err error) error {
+// syncWorkspaceToProject copies all changes from the workspace back to the
+// original project directory. Files present in the project but missing from
+// the workspace are treated as deleted.
+func syncWorkspaceToProject(workspace, project string) error {
+	// Build a set of all relative paths in the workspace
+	wsFiles := make(map[string]bool)
+	err := filepath.WalkDir(workspace, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
+		rel, err := filepath.Rel(workspace, path)
+		if err != nil || rel == "." {
+			return err
+		}
+		wsFiles[rel] = d.IsDir()
+		return nil
+	})
+	if err != nil {
+		return err
+	}
 
-		rel, err := filepath.Rel(upper, path)
+	// Walk the project and delete files/dirs that no longer exist in the workspace
+	err = filepath.WalkDir(project, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if rel == "." {
-			return nil
+		rel, err := filepath.Rel(project, path)
+		if err != nil || rel == "." {
+			return err
 		}
-
-		target := filepath.Join(lower, rel)
-
-		// Check for whiteout files (overlayfs marks deletions)
-		if strings.HasPrefix(filepath.Base(rel), ".wh.") {
-			original := filepath.Join(filepath.Dir(rel), strings.TrimPrefix(filepath.Base(rel), ".wh."))
-			os.Remove(filepath.Join(lower, original))
-			return nil
+		if _, exists := wsFiles[rel]; !exists {
+			if d.IsDir() {
+				return os.RemoveAll(path)
+			}
+			return os.Remove(path)
 		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
 
-		// Handle opaque directories (overlayfs marks directories where all
-		// entries should be replaced)
+	// Copy all workspace files to project (handles new and modified files)
+	return filepath.WalkDir(workspace, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(workspace, path)
+		if err != nil || rel == "." {
+			return err
+		}
+		target := filepath.Join(project, rel)
 		if d.IsDir() {
-			// Check for opaque marker
-			opaquePath := filepath.Join(path, ".wh..wh..opq")
-			if _, err := os.Stat(opaquePath); err == nil {
-				// Opaque: replace entire directory
-				if err := os.RemoveAll(target); err != nil {
-					return err
-				}
-				return copyDir(path, target)
-			}
-
-			if err := os.MkdirAll(target, 0755); err != nil {
-				return err
-			}
-			return nil
+			return os.MkdirAll(target, 0755)
 		}
-
-		// Regular file: copy from upper to lower
 		return copyFile(path, target)
 	})
 }
@@ -271,10 +266,6 @@ func copyDir(src, dst string) error {
 	for _, e := range entries {
 		srcPath := filepath.Join(src, e.Name())
 		dstPath := filepath.Join(dst, e.Name())
-		// Skip overlayfs opaque markers
-		if e.Name() == ".wh..wh..opq" {
-			continue
-		}
 		if e.IsDir() {
 			if err := copyDir(srcPath, dstPath); err != nil {
 				return err
@@ -286,4 +277,92 @@ func copyDir(src, dst string) error {
 		}
 	}
 	return nil
+}
+
+// DiffSession walks the workspace and compares against the original project.
+// It returns a list of changes: added, modified, and deleted files.
+func (m *Manager) DiffSession(id string) ([]DiffEntry, error) {
+	sess, err := loadSession(m.sessionPath(id))
+	if err != nil {
+		return nil, err
+	}
+	return diffSessionFiles(sess)
+}
+
+// filesEqual returns true when both files have identical content (SHA-256).
+func filesEqual(a, b string) (bool, error) {
+	fa, err := os.Open(a)
+	if err != nil {
+		return false, err
+	}
+	defer fa.Close()
+	fb, err := os.Open(b)
+	if err != nil {
+		return false, err
+	}
+	defer fb.Close()
+	ha, hb := sha256.New(), sha256.New()
+	if _, err := io.Copy(ha, fa); err != nil {
+		return false, err
+	}
+	if _, err := io.Copy(hb, fb); err != nil {
+		return false, err
+	}
+	return bytes.Equal(ha.Sum(nil), hb.Sum(nil)), nil
+}
+
+// diffSessionFiles is the internal implementation that compares workspace vs project.
+func diffSessionFiles(sess *Session) ([]DiffEntry, error) {
+	var changes []DiffEntry
+
+	err := filepath.Walk(sess.Workspace, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(sess.Workspace, path)
+		if err != nil || rel == "." {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		projectPath := filepath.Join(sess.Project, rel)
+		projectInfo, projectErr := os.Stat(projectPath)
+		if projectErr != nil {
+			if os.IsNotExist(projectErr) {
+				changes = append(changes, DiffEntry{Path: rel, Status: "added"})
+			}
+			return nil
+		}
+		if info.Size() == projectInfo.Size() {
+			if equal, _ := filesEqual(projectPath, path); equal {
+				return nil
+			}
+		}
+		changes = append(changes, DiffEntry{Path: rel, Status: "modified"})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Detect deleted files: files in project but not in workspace
+	err = filepath.Walk(sess.Project, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(sess.Project, path)
+		if err != nil || rel == "." {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		wsPath := filepath.Join(sess.Workspace, rel)
+		if _, err := os.Stat(wsPath); os.IsNotExist(err) {
+			changes = append(changes, DiffEntry{Path: rel, Status: "deleted"})
+		}
+		return nil
+	})
+	return changes, err
 }

@@ -6,36 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func requireOverlayFS(t *testing.T) {
-	t.Helper()
-	if _, err := os.Stat("/sys/module/overlay"); err != nil {
-		t.Skip("overlay kernel module not available")
-	}
-	// Test if we can actually mount (requires privileges)
-	merged := t.TempDir()
-	err := createOverlay(t.TempDir(), t.TempDir(), t.TempDir(), merged)
-	if err != nil {
-		t.Skipf("overlay mount not permitted: %v", err)
-	}
-	_ = syscall.Unmount(merged, 0)
-}
-
-func createOverlay(lower, upper, work, merged string) error {
-	for _, dir := range []string{upper, work, merged} {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return err
-		}
-	}
-	return syscall.Mount("overlay", merged, "overlay", 0,
-		fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lower, upper, work))
-}
 
 func setupTestProject(t *testing.T) string {
 	t.Helper()
@@ -65,33 +40,40 @@ func computeDirHash(t *testing.T, dir string) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
-func TestCreateOverlay(t *testing.T) {
-	requireOverlayFS(t)
-
+func TestCreateWorkspace(t *testing.T) {
 	project := setupTestProject(t)
-	lower := project
-	upper := filepath.Join(t.TempDir(), "upper")
-	work := filepath.Join(t.TempDir(), "work")
-	merged := filepath.Join(t.TempDir(), "merged")
+	workspace := filepath.Join(t.TempDir(), "workspace")
 
-	err := CreateOverlay(lower, upper, work, merged)
+	err := CreateWorkspace(project, workspace)
 	require.NoError(t, err)
-	defer func() { _ = RemoveOverlay(merged) }()
 
-	// Should see project files
-	data, err := os.ReadFile(filepath.Join(merged, "readme.md"))
+	// Should see project files in workspace
+	data, err := os.ReadFile(filepath.Join(workspace, "readme.md"))
 	require.NoError(t, err)
 	assert.Equal(t, "hello", string(data))
 
-	// Write through overlay should appear in upper
-	require.NoError(t, os.WriteFile(filepath.Join(merged, "new.txt"), []byte("created"), 0644))
-	_, err = os.Stat(filepath.Join(upper, "new.txt"))
-	assert.NoError(t, err, "new file should appear in upper layer")
+	data, err = os.ReadFile(filepath.Join(workspace, "src", "main.go"))
+	require.NoError(t, err)
+	assert.Equal(t, "package main", string(data))
+}
+
+func TestSessionStart(t *testing.T) {
+	project := setupTestProject(t)
+	mgr := NewManager(t.TempDir())
+
+	sess, err := mgr.StartSession(project)
+	require.NoError(t, err)
+	assert.Equal(t, StatusActive, sess.Status)
+	assert.Equal(t, project, sess.Project)
+	assert.NotEmpty(t, sess.Workspace)
+	assert.DirExists(t, sess.Workspace)
+
+	// Workspace should contain project files
+	_, err = os.Stat(filepath.Join(sess.Workspace, "readme.md"))
+	assert.NoError(t, err)
 }
 
 func TestSessionCommit(t *testing.T) {
-	requireOverlayFS(t)
-
 	project := setupTestProject(t)
 	originalHash := computeDirHash(t, project)
 
@@ -99,8 +81,8 @@ func TestSessionCommit(t *testing.T) {
 	sess, err := mgr.StartSession(project)
 	require.NoError(t, err)
 
-	// Modify via overlay
-	require.NoError(t, os.WriteFile(filepath.Join(sess.Merged, "newfile.go"), []byte("package main"), 0644))
+	// Modify in workspace
+	require.NoError(t, os.WriteFile(filepath.Join(sess.Workspace, "newfile.go"), []byte("package main"), 0644))
 
 	// Commit
 	require.NoError(t, mgr.CommitSession(sess.ID))
@@ -110,15 +92,53 @@ func TestSessionCommit(t *testing.T) {
 	assert.NoError(t, err, "committed file should exist in project")
 	assert.NotEqual(t, originalHash, computeDirHash(t, project), "project hash should change after commit")
 
-	// Load the session - should be in committed state
+	// Workspace should be cleaned up
+	assert.NoDirExists(t, sess.Workspace)
+
+	// Load the session — should be in committed state
 	loaded, err := mgr.GetSession(sess.ID)
 	require.NoError(t, err)
 	assert.Equal(t, StatusCommitted, loaded.Status)
 }
 
-func TestSessionDiscard(t *testing.T) {
-	requireOverlayFS(t)
+func TestSessionCommitModify(t *testing.T) {
+	project := setupTestProject(t)
 
+	mgr := NewManager(t.TempDir())
+	sess, err := mgr.StartSession(project)
+	require.NoError(t, err)
+
+	// Modify existing file in workspace
+	require.NoError(t, os.WriteFile(filepath.Join(sess.Workspace, "readme.md"), []byte("modified"), 0644))
+
+	// Commit
+	require.NoError(t, mgr.CommitSession(sess.ID))
+
+	// Project file should be modified
+	data, err := os.ReadFile(filepath.Join(project, "readme.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "modified", string(data))
+}
+
+func TestSessionCommitDelete(t *testing.T) {
+	project := setupTestProject(t)
+
+	mgr := NewManager(t.TempDir())
+	sess, err := mgr.StartSession(project)
+	require.NoError(t, err)
+
+	// Delete a file in workspace
+	require.NoError(t, os.Remove(filepath.Join(sess.Workspace, "readme.md")))
+
+	// Commit
+	require.NoError(t, mgr.CommitSession(sess.ID))
+
+	// File should be deleted from project
+	_, err = os.Stat(filepath.Join(project, "readme.md"))
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestSessionDiscard(t *testing.T) {
 	project := setupTestProject(t)
 	originalHash := computeDirHash(t, project)
 
@@ -126,8 +146,8 @@ func TestSessionDiscard(t *testing.T) {
 	sess, err := mgr.StartSession(project)
 	require.NoError(t, err)
 
-	// Modify via overlay
-	require.NoError(t, os.WriteFile(filepath.Join(sess.Merged, "temp.go"), []byte("temp"), 0644))
+	// Modify in workspace
+	require.NoError(t, os.WriteFile(filepath.Join(sess.Workspace, "temp.go"), []byte("temp"), 0644))
 
 	// Discard
 	require.NoError(t, mgr.DiscardSession(sess.ID))
@@ -137,6 +157,9 @@ func TestSessionDiscard(t *testing.T) {
 	_, err = os.Stat(filepath.Join(project, "temp.go"))
 	assert.True(t, os.IsNotExist(err))
 
+	// Workspace should be cleaned up
+	assert.NoDirExists(t, sess.Workspace)
+
 	// Session should be in discarded state
 	loaded, err := mgr.GetSession(sess.ID)
 	require.NoError(t, err)
@@ -144,8 +167,6 @@ func TestSessionDiscard(t *testing.T) {
 }
 
 func TestSessionList(t *testing.T) {
-	requireOverlayFS(t)
-
 	project := setupTestProject(t)
 	mgr := NewManager(t.TempDir())
 
@@ -163,11 +184,8 @@ func TestSessionList(t *testing.T) {
 }
 
 func TestConcurrentSessions(t *testing.T) {
-	requireOverlayFS(t)
-
 	project := setupTestProject(t)
 	mgr := NewManager(t.TempDir())
-
 	var wg sync.WaitGroup
 	var ids []string
 	var mu sync.Mutex
@@ -184,9 +202,8 @@ func TestConcurrentSessions(t *testing.T) {
 			mu.Lock()
 			ids = append(ids, sess.ID)
 			mu.Unlock()
-
 			// Write a unique file
-			_ = os.WriteFile(filepath.Join(sess.Merged, fmt.Sprintf("from_session_%d.txt", idx)),
+			_ = os.WriteFile(filepath.Join(sess.Workspace, fmt.Sprintf("from_session_%d.txt", idx)),
 				[]byte("data"), 0644)
 		}(i)
 	}
@@ -197,4 +214,113 @@ func TestConcurrentSessions(t *testing.T) {
 	for _, id := range ids {
 		require.NoError(t, mgr.DiscardSession(id))
 	}
+}
+
+func TestDiffSessionNoChanges(t *testing.T) {
+	project := setupTestProject(t)
+	mgr := NewManager(t.TempDir())
+
+	sess, err := mgr.StartSession(project)
+	require.NoError(t, err)
+
+	changes, err := mgr.DiffSession(sess.ID)
+	require.NoError(t, err)
+	assert.Empty(t, changes, "no changes should be detected for a fresh session")
+}
+
+func TestDiffSessionAdded(t *testing.T) {
+	project := setupTestProject(t)
+	mgr := NewManager(t.TempDir())
+
+	sess, err := mgr.StartSession(project)
+	require.NoError(t, err)
+
+	// Add a new file
+	require.NoError(t, os.WriteFile(filepath.Join(sess.Workspace, "newfile.txt"), []byte("new content"), 0644))
+
+	changes, err := mgr.DiffSession(sess.ID)
+	require.NoError(t, err)
+	assert.Len(t, changes, 1)
+	assert.Equal(t, "newfile.txt", changes[0].Path)
+	assert.Equal(t, "added", changes[0].Status)
+}
+
+func TestDiffSessionModified(t *testing.T) {
+	project := setupTestProject(t)
+	mgr := NewManager(t.TempDir())
+
+	sess, err := mgr.StartSession(project)
+	require.NoError(t, err)
+
+	// Modify an existing file
+	require.NoError(t, os.WriteFile(filepath.Join(sess.Workspace, "readme.md"), []byte("modified content"), 0644))
+
+	changes, err := mgr.DiffSession(sess.ID)
+	require.NoError(t, err)
+	assert.Len(t, changes, 1)
+	assert.Equal(t, "readme.md", changes[0].Path)
+	assert.Equal(t, "modified", changes[0].Status)
+}
+
+func TestDiffSessionDeleted(t *testing.T) {
+	project := setupTestProject(t)
+	mgr := NewManager(t.TempDir())
+
+	sess, err := mgr.StartSession(project)
+	require.NoError(t, err)
+
+	// Delete a file
+	require.NoError(t, os.Remove(filepath.Join(sess.Workspace, "readme.md")))
+
+	changes, err := mgr.DiffSession(sess.ID)
+	require.NoError(t, err)
+	assert.Len(t, changes, 1)
+	assert.Equal(t, "readme.md", changes[0].Path)
+	assert.Equal(t, "deleted", changes[0].Status)
+}
+
+func TestDiffSessionMixed(t *testing.T) {
+	project := setupTestProject(t)
+	mgr := NewManager(t.TempDir())
+
+	sess, err := mgr.StartSession(project)
+	require.NoError(t, err)
+
+	// Add a new file
+	require.NoError(t, os.WriteFile(filepath.Join(sess.Workspace, "added.txt"), []byte("new"), 0644))
+	// Modify an existing file
+	require.NoError(t, os.WriteFile(filepath.Join(sess.Workspace, "readme.md"), []byte("changed"), 0644))
+	// Delete an existing file
+	require.NoError(t, os.Remove(filepath.Join(sess.Workspace, filepath.Join("src", "main.go"))))
+
+	changes, err := mgr.DiffSession(sess.ID)
+	require.NoError(t, err)
+
+	// Build a map for easy assertions
+	byPath := make(map[string]string)
+	for _, c := range changes {
+		byPath[c.Path] = c.Status
+	}
+	assert.Equal(t, "added", byPath["added.txt"])
+	assert.Equal(t, "modified", byPath["readme.md"])
+	assert.Equal(t, "deleted", byPath[filepath.Join("src", "main.go")])
+	assert.Len(t, changes, 3)
+}
+
+func TestDiffSessionNestedAdded(t *testing.T) {
+	project := setupTestProject(t)
+	mgr := NewManager(t.TempDir())
+
+	sess, err := mgr.StartSession(project)
+	require.NoError(t, err)
+
+	// Add a file in a new subdirectory
+	require.NoError(t, os.MkdirAll(filepath.Join(sess.Workspace, "sub", "dir"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(sess.Workspace, "sub", "dir", "nested.go"), []byte("pkg nested"), 0644))
+
+	changes, err := mgr.DiffSession(sess.ID)
+	require.NoError(t, err)
+	assert.Len(t, changes, 1)
+	assert.Equal(t, filepath.Join("sub", "dir", "nested.go"), changes[0].Path)
+	assert.Equal(t, "added", changes[0].Status)
 }

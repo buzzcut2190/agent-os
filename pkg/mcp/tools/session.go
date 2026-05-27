@@ -2,14 +2,8 @@
 package tools
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
-	"io"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/agent-os/agent-os/pkg/sandbox"
@@ -69,21 +63,16 @@ type commitResult struct {
 	Message string `json:"message,omitempty"`
 }
 
-type diffEntry struct {
-	Path   string `json:"path"`
-	Status string `json:"status"` // "added", "modified", "deleted"
-}
-
 type diffResult struct {
-	SessionID string      `json:"session_id"`
-	Changes   []diffEntry `json:"changes"`
+	SessionID string            `json:"session_id"`
+	Changes   []sandbox.DiffEntry `json:"changes"`
 }
 
 // --- create_session ---
 
 func registerCreateSession(srv *server.MCPServer, mgr *sandbox.Manager, projectRoot string) {
 	tool := mcp.NewTool("create_session",
-		mcp.WithDescription("Create a new isolated overlay session for safe file operations"),
+		mcp.WithDescription("Create a new isolated copy-based session for safe file operations"),
 		mcp.WithString("project", mcp.Description("Project root directory (defaults to server project root)")),
 		mcp.WithString("name", mcp.Description("Optional human-readable name for the session")),
 	)
@@ -202,11 +191,7 @@ func registerSessionDiff(srv *server.MCPServer, mgr *sandbox.Manager) {
 		if !ok || id == "" {
 			return mcp.NewToolResultError("missing required parameter: id"), nil
 		}
-		sess, err := mgr.GetSession(id)
-		if err != nil {
-			return mcp.NewToolResultError("get session: " + err.Error()), nil
-		}
-		changes, err := diffSession(sess)
+		changes, err := mgr.DiffSession(id)
 		if err != nil {
 			return mcp.NewToolResultError("diff: " + err.Error()), nil
 		}
@@ -214,73 +199,7 @@ func registerSessionDiff(srv *server.MCPServer, mgr *sandbox.Manager) {
 	})
 }
 
-// --- diff implementation ---
-
-// diffSession walks the upper overlay layer and compares against lower.
-func diffSession(sess *sandbox.Session) ([]diffEntry, error) {
-	var changes []diffEntry
-	err := filepath.Walk(sess.Upper, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(sess.Upper, path)
-		if err != nil || rel == "." {
-			return err
-		}
-		base := filepath.Base(rel)
-		if strings.HasPrefix(base, ".wh.") {
-			if base == ".wh..wh..opq" {
-				return nil
-			}
-			deletedRel := filepath.Join(filepath.Dir(rel), strings.TrimPrefix(base, ".wh."))
-			if _, statErr := os.Stat(filepath.Join(sess.Lower, deletedRel)); statErr == nil {
-				changes = append(changes, diffEntry{Path: deletedRel, Status: "deleted"})
-			}
-			return nil
-		}
-		if info.IsDir() {
-			return nil
-		}
-		lowerPath := filepath.Join(sess.Lower, rel)
-		lowerInfo, lowerErr := os.Stat(lowerPath)
-		if lowerErr != nil {
-			if os.IsNotExist(lowerErr) {
-				changes = append(changes, diffEntry{Path: rel, Status: "added"})
-			}
-			return nil
-		}
-		if info.Size() == lowerInfo.Size() {
-			if equal, _ := filesEqual(lowerPath, path); equal {
-				return nil
-			}
-		}
-		changes = append(changes, diffEntry{Path: rel, Status: "modified"})
-		return nil
-	})
-	return changes, err
-}
-
-// filesEqual returns true when both files have identical content (SHA-256).
-func filesEqual(a, b string) (bool, error) {
-	fa, err := os.Open(a)
-	if err != nil {
-		return false, err
-	}
-	defer fa.Close()
-	fb, err := os.Open(b)
-	if err != nil {
-		return false, err
-	}
-	defer fb.Close()
-	ha, hb := sha256.New(), sha256.New()
-	if _, err := io.Copy(ha, fa); err != nil {
-		return false, err
-	}
-	if _, err := io.Copy(hb, fb); err != nil {
-		return false, err
-	}
-	return bytes.Equal(ha.Sum(nil), hb.Sum(nil)), nil
-}
+// --- json helper ---
 
 // jsonTextResult marshals v to JSON and returns a text-content result.
 func jsonTextResult(v any) (*mcp.CallToolResult, error) {

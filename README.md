@@ -9,8 +9,8 @@
 <p align="center">
   <a href="https://github.com/buzzcut2190/agent-os/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"/></a>
   <a href="https://github.com/buzzcut2190/agent-os/actions"><img src="https://img.shields.io/badge/build-passing-brightgreen" alt="Build"/></a>
-  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go" alt="Go 1.26"/></a>
-  <a href="https://github.com/buzzcut2190/agent-os/releases"><img src="https://img.shields.io/badge/version-v0.4.0-purple" alt="Version"/></a>
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go" alt="Go 1.25+"/></a>
+  <a href="https://github.com/buzzcut2190/agent-os/releases"><img src="https://img.shields.io/badge/version-v0.5.0-purple" alt="Version"/></a>
 </p>
 
 ---
@@ -77,14 +77,14 @@ agentfs-mcp serve --transport stdio
                   13 虚拟目录 · 33 MCP 工具
 ```
 
-### 三层架构
+### 四层架构
 
 | 层 | 核心能力 |
 |----|---------|
-| **🧠 Kernel** | Agent 进程调度、全生命周期管理、资源配额控制、IPC 频道通信、Model Router 按任务路由 LLM |
-| **👻 Daemon** | 文件变更监控、YAML 定时任务、定期报告生成推送、潜意识循环（空闲时自动发现模式） |
-| **🏠 Workspace** | 每个 Agent 的私有家目录、团队共享空间、分门别类的持久记忆（会话/决策/偏好/知识） |
 | **🗂️ agentfs** | FUSE 虚拟文件系统，13 个语义目录，所有功能都通过 `cat` / `ls` 原生暴露 |
+| **🏠 Workspace** | 每个 Agent 的私有家目录、团队共享空间、分门别类的持久记忆（会话/决策/偏好/知识）、会话沙箱 |
+| **👻 Daemon** | 文件变更监控、YAML 定时任务、定期报告生成推送、潜意识循环（空闲时自动发现模式） |
+| **🧠 Kernel** | Agent 进程调度、全生命周期管理、资源配额控制、IPC 频道通信、Model Router 按任务路由 LLM |
 
 ### MCP 协议（33 个工具）
 
@@ -99,6 +99,51 @@ AI agent 也可以通过 MCP 协议调用：
 | **技能** | `list_skills` `activate_skill` `deactivate_skill` `get_skill_context` |
 | **提供商** | `list_providers` `get_provider` `list_models` `set_api_key` `set_default_model` `switch_provider` `test_provider` |
 | **系统** | `ping` |
+
+---
+
+## 📦 会话沙箱
+
+agent-os 提供基于文件复制的轻量级会话沙箱，AI agent 可以在一个隔离的副本中工作，修改完成后选择提交或丢弃。
+
+**不需要 root 权限**，不依赖 OverlayFS，使用纯文件复制实现。
+
+```bash
+# 通过 MCP 工具创建会话（agent 自动在项目副本中工作）
+# create_session → 复制项目文件到 .agentfs/sessions/<id>/
+
+# 查看变更
+# session_diff → 显示会话副本与原项目的差异
+
+# 提交变更（将修改覆盖回原项目）
+# commit_session → 复制修改文件回原项目
+
+# 丢弃变更（删除副本）
+# discard_session → 清理会话目录
+```
+
+工作流程：
+
+```
+  原项目                    会话沙箱
+┌──────────┐    create    ┌──────────────┐
+│ src/main.go│ ──────────→ │ src/main.go  │  (副本)
+│ go.mod    │             │ go.mod       │
+└──────────┘             └──────┬───────┘
+                                │ 修改
+                         ┌──────▼───────┐
+                         │ src/main.go  │  (已修改)
+                         └──────┬───────┘
+                                │
+                    ┌───────────┴───────────┐
+                    │                       │
+              commit_session          discard_session
+                    │                       │
+             ┌──────▼───────┐         ┌──────▼───────┐
+             │ src/main.go  │         │  (已清理)     │
+             │ (已更新)      │         └──────────────┘
+             └──────────────┘
+```
 
 ---
 
@@ -145,13 +190,64 @@ agentfs provider list
 
 ---
 
+## ❓ 为什么选择 agent-os？
+
+| 特性 | agent-os | Cursor | Cline | Proma |
+|------|----------|--------|-------|-------|
+| **交互方式** | FUSE 文件系统 + MCP | IDE 插件 | IDE 插件 | CLI |
+| **模型支持** | 模型无关，5+ 提供商 | 仅 OpenAI | 多提供商 | 有限 |
+| **FUSE 原生** | ✅ 13 个语义目录 | ❌ | ❌ | ❌ |
+| **会话沙箱** | ✅ 副本隔离，无需 root | ❌ | ❌ | ❌ |
+| **多 Agent 协作** | ✅ 内核调度 + IPC | ❌ | ❌ | 部分 |
+| **主动能力** | ✅ Daemon 守护进程 | ❌ | ❌ | ❌ |
+| **部署形态** | 单二进制，无运行时依赖 | Electron 应用 | VS Code 扩展 | CLI |
+| **语言** | Go | TypeScript | TypeScript | Rust |
+
+agent-os 的独特优势：
+
+- **FUSE 创新**：agent 通过 `ls`/`cat` 原生发现项目信息，零学习成本
+- **模型无关内核**：不绑定任何 LLM 提供商，按任务类型智能路由
+- **Daemon 主动能力**：文件监控、定时任务、潜意识挖掘，agent 不只是被动响应
+- **轻量 Go 二进制**：单文件部署，无需 Node.js、Python 或其他运行时
+
+---
+
+## 🗺️ 路线图
+
+### v0.5.0 (当前) — 会话沙箱
+- [x] 基于文件复制的会话沙箱（无需 root）
+- [x] CLI 会话 diff 查看
+- [x] GUI 错误处理优化
+- [x] 文档全面更新
+- [x] CI/CD 流水线
+
+### Phase C — 输出与控制
+- [ ] 流式输出（SSE）支持
+- [ ] 细粒度权限控制系统
+- [ ] 操作审计日志
+
+### Phase D — IDE 集成
+- [ ] VS Code 扩展
+- [ ] JetBrains 插件
+- [ ] Neovim LSP 集成
+
+### Phase E — 主动智能中心
+- [ ] Proactive Center：基于 Daemon 事件的主动建议
+- [ ] Agent 自进化：从历史会话学习优化策略
+- [ ] 多项目 Workspace 联邦
+- [ ] Web Dashboard
+
+---
+
 ## 📖 文档
 
 | 文档 | 说明 |
 |------|------|
+| [Architecture](docs/architecture.md) | 架构详解 |
 | [Getting Started](docs/getting-started.md) | 快速入门 |
 | [CLI Reference](docs/cli.md) | 命令参考 |
 | [MCP Tools](docs/mcp-tools.md) | MCP 工具参考 |
+| [CHANGELOG](CHANGELOG.md) | 版本变更记录 |
 
 ---
 
@@ -171,6 +267,20 @@ agentfs mount . .agentfs/mnt   # 重新挂载
 ### Provider 配置注意
 
 YAML 字段是 snake_case（`base_url`、`api_key`），`agentfs provider init` 会自动生成正确格式。
+
+---
+
+## 🤝 参与贡献
+
+欢迎贡献！请遵循以下指南：
+
+1. **Fork** 仓库，创建功能分支：`git checkout -b feat/my-feature`
+2. **开发** 时遵循项目代码风格，确保 `make lint` 通过
+3. **测试**：添加新功能时请补充单元测试，运行 `make test`
+4. **提交**：使用语义化 commit message（feat/fix/docs/refactor）
+5. **PR**：向 `main` 分支发起 Pull Request，描述清楚变更内容
+
+详细架构请参考 [docs/architecture.md](docs/architecture.md)。
 
 ---
 

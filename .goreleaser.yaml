@@ -1,27 +1,51 @@
-before:
-  hooks:
-    - go mod tidy
+version: 2
+
+project_name: agent-os
 
 builds:
-  - id: agentfs
-    main: ./cmd/agentfs/
-    binary: agentfs
-    goos: [linux, darwin]
-    goarch: [amd64, arm64]
-    ldflags: -X main.version={{.Version}}
-  - id: agentfs-mcp
-    main: ./cmd/agentfs-mcp/
-    binary: agentfs-mcp
-    goos: [linux, darwin]
-    goarch: [amd64, arm64]
-    ldflags: -X main.version={{.Version}}
+  - binary: agent-os
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
 
 archives:
-  - format: tar.gz
-    name_template: "{{.Binary}}-{{.Os}}-{{.Arch}}"
+  - formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "arm64" }}aarch64
+      {{- else }}{{ .Arch }}{{ end }}
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
 
 checksum:
-  name_template: checksums.txt
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+release:
+  github:
+    owner: "{{ .Env.GITHUB_REPOSITORY_OWNER }}"
+    name: "{{ .ProjectName }}"
+  draft: false
+  replace_existing_draft: true
+  prerelease: auto
 
 changelog:
   sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^ci:'
+      - '^chore:'
+      - '^build:'
+      - '^style:'
+      - '^refactor:'
