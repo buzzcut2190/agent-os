@@ -255,6 +255,15 @@ func copyFile(src, dst string) error {
 	return os.Chmod(dst, info.Mode())
 }
 
+// skipDirs are directory names that should never be copied into a session workspace.
+var skipDirs = map[string]bool{
+	".agentfs": true, // FUSE mount points and metadata
+	".git":    true, // version control (preserved in project, not needed in sandbox)
+	"node_modules": true, // dependency caches (too large, can be restored via package manager)
+	".venv":   true, // Python virtual environments
+	"target":  true, // Rust/Cargo build artifacts
+}
+
 func copyDir(src, dst string) error {
 	if err := os.MkdirAll(dst, 0755); err != nil {
 		return err
@@ -264,6 +273,9 @@ func copyDir(src, dst string) error {
 		return err
 	}
 	for _, e := range entries {
+		if skipDirs[e.Name()] {
+			continue
+		}
 		srcPath := filepath.Join(src, e.Name())
 		dstPath := filepath.Join(dst, e.Name())
 		if e.IsDir() {
@@ -349,11 +361,11 @@ func diffSessionFiles(sess *Session) ([]DiffEntry, error) {
 	// Detect deleted files: files in project but not in workspace
 	err = filepath.Walk(sess.Project, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return err
+			return nil // skip unreadable dirs (e.g. stale FUSE mounts)
 		}
 		rel, err := filepath.Rel(sess.Project, path)
 		if err != nil || rel == "." {
-			return err
+			return nil
 		}
 		if info.IsDir() {
 			return nil
