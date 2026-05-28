@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"text/tabwriter"
 	"time"
 
@@ -54,7 +55,7 @@ func main() {
 
 	case "session":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: agentfs session <start|list|commit|discard|diff> [args]")
+			fmt.Fprintln(os.Stderr, "Usage: agentfs session <start|list|get|open|mount|commit|discard|diff> [args]")
 			os.Exit(1)
 		}
 		runSession(os.Args[2:])
@@ -125,7 +126,7 @@ func runUnmount(mountPoint string) error {
 
 func runSession(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: agentfs session <start|list|commit|discard|diff> [args]")
+		fmt.Fprintln(os.Stderr, "Usage: agentfs session <start|list|get|open|mount|commit|discard|diff> [args]")
 		os.Exit(1)
 	}
 
@@ -154,10 +155,14 @@ func runSession(args []string) {
 			return
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tPROJECT\tSTATUS\tCREATED")
+		fmt.Fprintln(w, "ID\tPROJECT\tWORKSPACE\tSTATUS\tCREATED")
 		for _, s := range sessions {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-				s.ID[:8]+"...", s.Project, s.Status,
+			ws := s.Workspace
+			if len(ws) > 40 {
+				ws = "..." + ws[len(ws)-37:]
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+				s.ID[:8]+"...", s.Project, ws, s.Status,
 				s.Created.Format(time.RFC3339))
 		}
 		w.Flush()
@@ -166,7 +171,11 @@ func runSession(args []string) {
 		if len(args) < 2 {
 			log.Fatal("Usage: agentfs session commit <session_id>")
 		}
-		if err := mgr.CommitSession(args[1]); err != nil {
+		sess, err := mgr.GetSessionByPrefix(args[1])
+		if err != nil {
+			log.Fatalf("commit: %v", err)
+		}
+		if err := mgr.CommitSession(sess.ID); err != nil {
 			log.Fatalf("commit: %v", err)
 		}
 		fmt.Println("Session committed")
@@ -175,7 +184,11 @@ func runSession(args []string) {
 		if len(args) < 2 {
 			log.Fatal("Usage: agentfs session discard <session_id>")
 		}
-		if err := mgr.DiscardSession(args[1]); err != nil {
+		sess, err := mgr.GetSessionByPrefix(args[1])
+		if err != nil {
+			log.Fatalf("discard: %v", err)
+		}
+		if err := mgr.DiscardSession(sess.ID); err != nil {
 			log.Fatalf("discard: %v", err)
 		}
 		fmt.Println("Session discarded")
@@ -184,7 +197,11 @@ func runSession(args []string) {
 		if len(args) < 2 {
 			log.Fatal("Usage: agentfs session diff <session_id>")
 		}
-		changes, err := mgr.DiffSession(args[1])
+		sess, err := mgr.GetSessionByPrefix(args[1])
+		if err != nil {
+			log.Fatalf("diff: %v", err)
+		}
+		changes, err := mgr.DiffSession(sess.ID)
 		if err != nil {
 			log.Fatalf("diff: %v", err)
 		}
@@ -198,6 +215,51 @@ func runSession(args []string) {
 			fmt.Fprintf(w, "%s\t%s\n", c.Path, c.Status)
 		}
 		w.Flush()
+
+	case "get":
+		if len(args) < 2 {
+			log.Fatal("Usage: agentfs session get <session_id>")
+		}
+		sess, err := mgr.GetSessionByPrefix(args[1])
+		if err != nil {
+			log.Fatalf("get session: %v", err)
+		}
+		fmt.Printf("ID:        %s\n", sess.ID)
+		fmt.Printf("Project:   %s\n", sess.Project)
+		fmt.Printf("Workspace: %s\n", sess.Workspace)
+		fmt.Printf("Status:    %s\n", sess.Status)
+		fmt.Printf("Created:   %s\n", sess.Created.Format(time.RFC3339))
+
+	case "open":
+		if len(args) < 2 {
+			log.Fatal("Usage: agentfs session open <session_id>")
+		}
+		sess, err := mgr.GetSessionByPrefix(args[1])
+		if err != nil {
+			log.Fatalf("get session: %v", err)
+		}
+		fmt.Printf("Workspace: %s\n", sess.Workspace)
+		fmt.Println("Hint: xdg-open <workspace> to open in your file manager, or cd <workspace> to enter the directory.")
+
+	case "mount":
+		if len(args) < 2 {
+			log.Fatal("Usage: agentfs session mount <session_id>")
+		}
+		sess, err := mgr.GetSessionByPrefix(args[1])
+		if err != nil {
+			log.Fatalf("get session: %v", err)
+		}
+		if sess.Status != sandbox.StatusActive {
+			log.Fatalf("session %s is not active (status: %s)", sess.ID, sess.Status)
+		}
+		mountPoint := filepath.Join(sess.Workspace, ".agentfs", "mnt")
+		if err := os.MkdirAll(mountPoint, 0755); err != nil {
+			log.Fatalf("create mount point: %v", err)
+		}
+		fmt.Printf("Mounting workspace FUSE at %s... Press Ctrl+C to unmount.\n", mountPoint)
+		if err := runMount(sess.Workspace, mountPoint, false); err != nil {
+			log.Fatalf("mount: %v", err)
+		}
 
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown session command: %s\n", args[0])
@@ -213,6 +275,14 @@ Commands:
   mount <src> <mnt>    Mount source directory at mount point
   unmount <mnt>        Unmount a previously mounted filesystem
   session              Manage sessions (Module 3)
+    start <dir>         Start a new session for a project directory
+    list                List all sessions
+    get <id>            Show full details of a session
+    open <id>           Print workspace path (use xdg-open to open in file manager)
+    mount <id>          Mount FUSE semantic filesystem on session workspace
+    commit <id>         Commit session changes back to project
+    discard <id>        Discard session changes
+    diff <id>           Show changes vs original project
   init                 Initialize project (Module 4)
   integrate            Configure agent integration (Module 4)
   skill                Manage skills (Module 6)

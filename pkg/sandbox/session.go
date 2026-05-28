@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -129,9 +130,35 @@ func (m *Manager) ListSessions() ([]*Session, error) {
 	return sessions, nil
 }
 
-// GetSession loads a session by ID.
+// GetSession loads a session by exact ID.
 func (m *Manager) GetSession(id string) (*Session, error) {
 	return loadSession(m.sessionPath(id))
+}
+
+// GetSessionByPrefix finds a session by ID prefix. Returns an error if
+// the prefix is ambiguous or matches no session.
+func (m *Manager) GetSessionByPrefix(prefix string) (*Session, error) {
+	sessions, err := m.ListSessions()
+	if err != nil {
+		return nil, err
+	}
+	var matches []*Session
+	for _, s := range sessions {
+		if strings.HasPrefix(s.ID, prefix) {
+			matches = append(matches, s)
+		}
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("session with prefix %q not found", prefix)
+	}
+	if len(matches) > 1 {
+		ids := make([]string, len(matches))
+		for i, s := range matches {
+			ids[i] = s.ID
+		}
+		return nil, fmt.Errorf("ambiguous prefix %q matches %d sessions: %v", prefix, len(matches), ids)
+	}
+	return matches[0], nil
 }
 
 func (m *Manager) sessionPath(id string) string {
