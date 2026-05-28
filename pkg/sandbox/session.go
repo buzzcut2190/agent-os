@@ -105,6 +105,31 @@ func (m *Manager) DiscardSession(id string) error {
 	return saveSession(m.sessionPath(id), sess)
 }
 
+// ListAllWorkspaces scans the session base directory and returns every session
+// metadata entry (including terminated ones). Unlike the Manager's ListSessions,
+// this bypasses the Manager's internal filtering.
+func ListAllWorkspaces(baseDir string) ([]*Session, error) {
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		return nil, err
+	}
+	var sessions []*Session
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		sess, err := loadSession(filepath.Join(baseDir, e.Name(), "session.json"))
+		if err != nil {
+			continue
+		}
+		sessions = append(sessions, sess)
+	}
+	return sessions, nil
+}
+
 // ListSessions returns all sessions.
 func (m *Manager) ListSessions() ([]*Session, error) {
 	if err := os.MkdirAll(m.BaseDir, 0755); err != nil {

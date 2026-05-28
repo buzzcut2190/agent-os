@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -62,6 +63,47 @@ func main() {
 			log.Fatalf("uninstall: %v", err)
 		}
 
+	case "call":
+		// Single-shot MCP tool call. Used by Tauri GUI.
+		callCmd := flag.NewFlagSet("call", flag.ExitOnError)
+		projectRoot := callCmd.String("project-root", ".", "Project root directory")
+		sessionDir := callCmd.String("session-dir", "", "Session storage directory")
+		_ = callCmd.Parse(os.Args[2:])
+
+		args := callCmd.Args()
+		if len(args) < 1 {
+			fmt.Fprintf(os.Stderr, "Usage: agentfs-mcp call [flags] <tool> [json_params]\n")
+			os.Exit(1)
+		}
+		toolName := args[0]
+		paramsJSON := "{}"
+		if len(args) >= 2 {
+			paramsJSON = args[1]
+		}
+
+		cfg := mcp.DefaultConfig()
+		cfg.ProjectRoot = *projectRoot
+		if *sessionDir != "" {
+			cfg.SessionDir = *sessionDir
+		}
+
+		srv := mcp.New(cfg)
+		srv.RegisterAll()
+		result, err := srv.CallTool(context.Background(), toolName, []byte(paramsJSON))
+		if err != nil {
+			log.Fatalf("call: %v", err)
+		}
+		fmt.Println(result)
+
+	case "list-tools":
+		// List all registered MCP tools (for debugging / inspector)
+		cfg := mcp.DefaultConfig()
+		srv := mcp.New(cfg)
+		srv.RegisterAll()
+		for name := range srv.Server().ListTools() {
+			fmt.Println(name)
+		}
+
 	default:
 		printUsage()
 		os.Exit(1)
@@ -73,9 +115,15 @@ func printUsage() {
 
 Commands:
   serve       Start the MCP server
+  call        Execute a single MCP tool and print the result
+  list-tools  List all registered MCP tools
   install     Generate MCP client configuration for an AI agent
   uninstall   Remove previously installed MCP client configuration
   version     Print version and exit
+
+Call flags:
+  --project-root string Root directory (default ".")
+  --session-dir string Session storage directory
 
 Serve flags:
   --transport string   Transport: "stdio" or "sse" (default "stdio")

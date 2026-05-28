@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.0] - 2026-05-29
+
+### Added
+
+- **Tauri 桌面 GUI v1.0** (`gui/`)：
+  - 挂载/卸载控制面板
+  - VirtualDirTree：13 个语义目录浏览器
+  - Search / Graph / Refactor / Memory / Bridges 页面
+  - Kernel / Daemon / Workspaces / MCP / Settings 页面
+  - Agent 管理器：启动/停止/输出监控 + Provider 热切换
+  - Skill 执行面板
+- **Kernel 持久化** (`pkg/kernel/`)：
+  - Agent 生命周期状态持久化存储
+  - `agentfs kernel start <name>` 支持 `--model` / `--provider` 参数
+  - Kernel 状态跨进程恢复
+- **MCP CLI 扩展** (`cmd/agentfs-mcp/`)：
+  - `agentfs-mcp call <tool> [json]` — 本地直接调用 MCP 工具
+  - `agentfs-mcp list-tools` — 列出所有可用工具及参数
+  - `--project-root` / `--session-dir` 全局标志
+- **Workspace CLI** (`cmd/agentfs/`)：
+  - `agentfs workspace list` / `open <id>` / `info <id>`
+- **Session 后台挂载** (`agentfs session mount --daemon`)：
+  - 后台守护进程模式挂载会话文件系统
+  - `agentfs session unmount` 卸载
+
+### Changed
+
+- MCP Server `CallTool` 方法支持本地直接调用（通过 `ListTools` 查找 handler）
+- Tauri Rust 后端 `mcp_call` 命令接入 `agentfs-mcp call`
+- `cc` 脚本修复：非 Claude Code 参数透传到真实 C 编译器，避免干扰 Rust 构建
+
+### Fixed
+
+- Tauri GUI 构建失败：`/home/d-eggs/.local/bin/cc` 脚本拦截 C 编译器调用
+
+### Internal
+
+- 删除未使用的 `pkg/mcp/tools/registry.go`
+- `ListAllWorkspaces()` 独立函数添加到 sandbox 包
+
+---
+
 ## [0.5.0] - 2026-05-28
 
 ### Added

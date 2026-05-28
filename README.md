@@ -10,7 +10,7 @@
   <a href="https://github.com/buzzcut2190/agent-os/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"/></a>
   <a href="https://github.com/buzzcut2190/agent-os/actions"><img src="https://img.shields.io/badge/build-passing-brightgreen" alt="Build"/></a>
   <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go" alt="Go 1.25+"/></a>
-  <a href="https://github.com/buzzcut2190/agent-os/releases"><img src="https://img.shields.io/badge/version-v0.5.0-purple" alt="Version"/></a>
+  <a href="https://github.com/buzzcut2190/agent-os/releases"><img src="https://img.shields.io/badge/version-v0.6.0-purple" alt="Version"/></a>
 </p>
 
 ---
@@ -214,12 +214,12 @@ agent-os 的独特优势：
 
 ## 🗺️ 路线图
 
-### v0.5.0 (当前) — 会话沙箱
-- [x] 基于文件复制的会话沙箱（无需 root）
-- [x] CLI 会话 diff 查看
-- [x] GUI 错误处理优化
-- [x] 文档全面更新
-- [x] CI/CD 流水线
+### v0.6.0 (当前) — 桌面 GUI + Kernel 持久化
+- [x] Tauri 桌面应用（挂载控制、13 目录浏览器、Agent 管理）
+- [x] Kernel Agent 生命周期持久化 + Provider 热切换
+- [x] `agentfs-mcp call` / `list-tools` CLI
+- [x] `agentfs workspace` CLI 子命令
+- [x] Session 后台守护进程挂载
 
 ### Phase C — 输出与控制
 - [ ] 流式输出（SSE）支持

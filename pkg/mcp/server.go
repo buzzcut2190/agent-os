@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -101,4 +102,58 @@ func (s *Server) Context() context.Context {
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown() {
 	s.sigStop()
+}
+
+// CallTool executes a single tool by name with JSON params.
+// It finds the handler via ListTools and calls it directly.
+func (s *Server) CallTool(ctx context.Context, name string, paramsJSON []byte) (string, error) {
+	tools := s.srv.ListTools()
+	t, ok := tools[name]
+	if !ok {
+		return "", fmt.Errorf("tool %q not found", name)
+	}
+
+	var args map[string]any
+	if len(paramsJSON) > 0 {
+		if err := json.Unmarshal(paramsJSON, &args); err != nil {
+			return "", fmt.Errorf("invalid params JSON: %w", err)
+		}
+	} else {
+		args = map[string]any{}
+	}
+
+	req := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Arguments: args,
+		},
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	result, err := t.Handler(ctx, req)
+	if err != nil {
+		return "", err
+	}
+
+	// Extract text content
+	var texts []string
+	for _, c := range result.Content {
+		if tc, ok := c.(mcp.TextContent); ok {
+			texts = append(texts, tc.Text)
+		}
+	}
+	text := ""
+	for i, t := range texts {
+		if i > 0 {
+			text += "\n"
+		}
+		text += t
+	}
+
+	if result.IsError {
+		return "", fmt.Errorf("tool error: %s", text)
+	}
+	return text, nil
 }
