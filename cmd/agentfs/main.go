@@ -157,12 +157,8 @@ func runSession(args []string) {
 		w := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
 		fmt.Fprintln(w, "ID\tPROJECT\tWORKSPACE\tSTATUS\tCREATED")
 		for _, s := range sessions {
-			ws := s.Workspace
-			if len(ws) > 40 {
-				ws = "..." + ws[len(ws)-37:]
-			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-				s.ID[:8]+"...", s.Project, ws, s.Status,
+				s.ID[:8]+"...", s.Project, s.Workspace, s.Status,
 				s.Created.Format(time.RFC3339))
 		}
 		w.Flush()
